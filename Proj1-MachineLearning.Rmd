@@ -1,0 +1,120 @@
+---
+title: "Prediction of Dumbell Exercises using the Human Activity Recognition Dataset"
+author: "David M."
+date: '2017-08-02'
+output:
+  html_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(fig.height = 5, fig.width = 5)
+require(ggplot2)
+require(gdata)
+require(dplyr)
+require(grid)
+require(gridExtra)
+require(caret)
+require(randomForest)
+require(GGally)
+require(MASS)
+require(klaR)
+```
+
+## Synopsis
+This report provides an analysis of the Human Activity Recognition [dataset](http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har) for weight lifting excersises to classify 5 different movements of dumbell exercises. Six young health participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E).
+
+The dataset used for predicting the activities consisted of 19,622 records with 160 variables, which was separated into a training and test set. Several models were analyized and a random forest model with centering, scaling and PCA processing provided the best result with an accuracy of 99.3% on the test set. The resulting model was used to predict an additional 20 movements, which is included in the Results section of this report.
+
+## Loading and Processing the Raw Data
+The training set consists of 19,622 records with 160 variables associated with the exercise movements. The training set was separated into a training (60%) and test (40%) set for cross validation. The results of the analysis will be applied to predict the classes of the 'testing' set consisting of 20 movements.
+
+```{r}
+weight <- read.csv("pml-training.csv", header = TRUE, stringsAsFactors = FALSE)
+set.seed(731364)
+inTrain = createDataPartition(weight$classe, p = 0.6, list = FALSE)
+wTraining = weight[inTrain,] 
+wTesting = weight[-inTrain,] 
+weightVal <- read.csv("pml-testing.csv", header = TRUE, stringsAsFactors = FALSE)
+data.frame( Set = c("Original Training", "New Training", "New Testing", "Final Test"), NunRow= c(nrow(weight), nrow(wTraining), nrow(wTesting), nrow(weightVal)))
+```
+
+### Data Processing: Removing Unnecessary Variables
+During the exploratory analyisis (see Appendix), several variables were identified to be removed:
+\begin{itemize}
+\item X - This is an indexing variable and should not be used to predict the type of lift.
+\item user_name - We are trying to predict the movements independent of the person.
+\item raw_timestamp_part_1, raw_timestamp_part_2, cvtd_timestamp, new_window, num_window - As we are not trying to predict the type of curl based on a set of movements over a period of time, the time stamp and window variables are not necessary.
+\item Variables with high NAs - The 67 variables with over 10,000 NAs values in the Training appear to be parameters created for each new window and will not be helpful for the objective.
+\item Variables with near zero values - The 33 variables with near zero values in the Training set based on the nearZeroVar R function. 
+\end{itemize}
+All the remaining attributes are continuous variables of the barbell movements. Some variables are highly correlated so PCA, where possible, will be used in the pre processing during the model selection. 
+
+Additionally, some of the variables (e.g. roll_belt) have high variability. As such, the variables will be centered and scaled, where possible, using the pre processing setting during the model selection.
+```{r, cache=TRUE}
+varNAs <- as.matrix(sapply(wTraining, function(x) sum(is.na(x)), simplify = TRUE))
+highNAs <-which(varNAs[,1]>10000)
+
+wTrainMod <- wTraining[,-c(1:7,highNAs)]
+nearZeros <-nearZeroVar(wTrainMod)
+wTrainMod <- wTrainMod[,-nearZeros]
+wTrainMod$classe <- as.factor(wTrainMod$classe)
+wTestMod <- wTesting[,-c(1:7,highNAs)]
+wTestMod <- wTestMod[,-nearZeros]
+wTestMod$classe <- as.factor(wTestMod$classe)
+```
+
+## Model Selection
+Several models will be tested with a focus on accuracy; processing time will not be a significant criteria to select the model. The models that will be tested are: Random Forest, Regression Trees, Linear Discriminant Analysis and Stochastic Gradient Boosting. 
+```{r, cache=TRUE, warning=FALSE}
+modRF <- randomForest(classe ~ ., data=wTrainMod, importance=TRUE, metric="Accuracy", prePros=c("pca","center","scale"),pcaComp=2, prox=TRUE)
+modLDA <- train(classe ~ ., method="lda",data=wTrainMod,metric="Accuracy",  prePros=c("pca","center","scale"),pcaComp=2)
+modRPART <- train(classe ~ ., method="rpart",data=wTrainMod,metric="Accuracy")
+modGBM <- train(classe ~ ., method="gbm",data=wTrainMod,metric="Accuracy", verbose=FALSE)
+```
+The in-sample error rate for the Random Forest is low as the model has an 100% accuracy rate. As such, that model will be selected.
+```{r, cache=TRUE,warning=FALSE}
+data.frame( Model = c("Random Forest", "Linear Discrimate Analysis","Regression Trees", "Stochastic Gradient Boosting"),Accuracy =c(
+confusionMatrix(predict(modRF,wTrainMod),wTrainMod$classe)$overall['Accuracy'][[1]],
+confusionMatrix(predict(modLDA,wTrainMod),wTrainMod$classe)$overall['Accuracy'][[1]],
+confusionMatrix(predict(modRPART,wTrainMod),wTrainMod$classe)$overall['Accuracy'][[1]],
+confusionMatrix(predict(modGBM,wTrainMod),wTrainMod$classe)$overall['Accuracy'][[1]]))
+```
+
+## Results
+The Random Forest model showed the highest accuracy of all the tested models. The model has an out-sample error rate that is relatively low as the accuracy on the test set is 99.30%.
+
+A plot of the class centers for the top two most important variables from the varImp function shows that there is overlap between the different classes and that the prediction model utilizes many variables to classify the movements. Also displayed is a plot of the prediction accuracy for the test shows results from the random forest model.
+
+The prediction function shows the predicted values for the 20 movements in the 'testing' set. 
+```{r, fig.height=5,fig.width=10}
+modRF
+confusionMatrix(predict(modRF,wTestMod),wTestMod$classe)
+predict(modRF,weightVal)
+
+rollP <- classCenter(wTrainMod[,c(1,2)], wTrainMod$classe, modRF$proximity)
+rollP <- as.data.frame(rollP); rollP$classe <- rownames(rollP)
+p1 <- qplot(roll_belt, pitch_belt, col=classe,data=wTrainMod)
+p1 <- p1+geom_point(aes(x=roll_belt,y=pitch_belt, col=classe), size=5, shape=4, data=rollP)
+pred <- predict(modRF,wTestMod); wTestMod$predRight <- pred==wTestMod$classe
+p2 <- qplot(roll_belt, pitch_belt,colour=predRight, data=wTestMod)
+grid.arrange(p1, p2, ncol=2)
+```
+
+
+## Appendix
+### Exploratory Analysis
+During the exploratory analysis, the structure and layout of the data was assessed. Due to the dimensions of the data and the report size limits, the output has been omitted and only a sample of the formulas are included.
+```{r, eval=FALSE}
+head(wTraining)
+tail(wTraining)
+str(wTraining)
+summary(wTraining)
+varNAs <- as.matrix(sapply(wTraining, function(x) sum(is.na(x)), simplify = TRUE))
+var(wTrainMod)
+cor <- findCorrelation(cor(wTrainMod[,-53]), cutoff = 0.75,verbose = TRUE)
+pm <- ggpairs(wTraining,columns = 8:10, ggplot2::aes(colour=classe))
+qplot(classe, pitch_belt, data=wTraining[wTraining$user_name=="carlitos",],geom = c("boxplot"))
+qplot(classe, pitch_belt, data=wTraining[wTraining$user_name=="eurico",],geom = c("boxplot"))
+```
